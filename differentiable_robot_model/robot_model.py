@@ -5,9 +5,11 @@ Differentiable robot model class
 TODO
 """
 
+from re import A
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import os
+from matplotlib.pyplot import cool
 
 import torch
 
@@ -373,6 +375,149 @@ class DifferentiableRobotModel(torch.nn.Module):
             force += damping_const.repeat(batch_size, 1) * qd
 
         return force
+
+    @tensor_check
+    def compute_inverse_kinematics_jac(
+        self,
+        trans: torch.Tensor,
+        rot: torch.Tensor,
+        link_name: str,
+        init_conf: Optional[torch.Tensor] = None,
+        max_num_iter: int = 1000,
+        min_precision: float = 0.1,
+        learning_rate: float = 0.1,
+        verbose: bool = False
+    ) -> torch.Tensor:
+        r"""
+
+        Args:
+            trans: translation vector [batch_size x 3]
+            rot: rotation vector [batch_size x 4]
+            link_name: name of link
+            init_conf: initinal configuration [batch_size x n_dofs] (optional)
+            max_num_iter: maximal number of iterations
+            min_precision: which precision is good enough
+            verbose: show debug log
+
+        Returns: final configuration 
+        
+        """
+        assert trans.ndim == 2, rot.ndim == 2
+        assert trans.shape[0] == rot.shape[0]
+        assert trans.shape[1] == 3 and rot.shape[1] == 4        
+
+        import transformations as tf
+
+        batch_size = trans.shape[0]
+        final_conf = torch.empty((batch_size, self._n_dofs))
+
+        for th_idx in range(batch_size):
+            if th_idx == 0:
+                if init_conf == None:
+                    curr_conf = torch.rand((self._n_dofs)) # TODO: find better approximation?!
+                else:
+                    curr_conf = init_conf
+            else:
+                curr_conf = final_conf[th_idx-1]
+
+            goal_pose = torch.cat((trans[th_idx], torch.tensor(tf.euler_from_quaternion(rot[th_idx]))), dim=-1)
+
+            for i in range(max_num_iter):
+                curr_pos, curr_rot = self.compute_forward_kinematics(curr_conf, link_name=link_name)
+                curr_rot = curr_rot[[3, 0, 1, 2]]
+                curr_pose = torch.cat((curr_pos, torch.tensor(tf.euler_from_quaternion(curr_rot))), dim=-1)
+
+                curr_delta_pose = curr_pose - goal_pose
+                delta_norm = torch.norm(curr_delta_pose, dim=-1)
+
+                if verbose:
+                    print(f"{th_idx} link loss in {i}: {delta_norm}")
+
+                if delta_norm < min_precision:
+                    break
+
+                lin_jac, ang_jac = self.compute_endeffector_jacobian(curr_conf, link_name=link_name)
+                jac = torch.concat((lin_jac, ang_jac), dim=0)
+
+                curr_delta_conf = jac.T @ curr_delta_pose.to(torch.float)
+
+                curr_conf = curr_conf - learning_rate * curr_delta_conf
+
+            final_conf[th_idx] = curr_conf
+
+        return final_conf
+
+    @tensor_check
+    def compute_inverse_kinematics_gb(
+        self,
+        trans: torch.Tensor,
+        rot: torch.Tensor,
+        link_name: str,
+        init_conf: Optional[torch.Tensor] = None,
+        max_num_iter: int = 1000,
+        min_precision: float = 0.1,
+        learning_rate: float = 0.1,
+        verbose: bool = False
+    ) -> torch.Tensor:
+        r"""
+
+        Args:
+            trans: translation vector [batch_size x 3]
+            rot: rotation vector [batch_size x 4]
+            link_name: name of link
+            init_conf: initinal configuration for first batch_size variable [n_dofs] (optional)
+            max_num_iter: maximal number of iterations
+            min_precision: which precision is good enough
+            verbose: show debug log
+
+        Returns: final configuration 
+        
+        """
+        assert trans.ndim == 2, rot.ndim == 2
+        assert trans.shape[0] == rot.shape[0]
+        assert trans.shape[1] == 3 and rot.shape[1] == 4
+
+        batch_size = trans.shape[0]
+        final_conf = torch.empty((batch_size, self._n_dofs))
+
+        for th_idx in range(batch_size):
+            if th_idx == 0:
+                if init_conf is None:
+                    curr_conf = torch.zeros(self._n_dofs) # TODO: find better approximation?!
+                else:
+                    curr_conf = init_conf
+            else:
+                curr_conf = torch.clone(final_conf[th_idx-1]).detach()
+
+            curr_conf.requires_grad = True        
+
+            optimizer = torch.optim.Adam([curr_conf], lr=learning_rate)
+            lr_scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=100, cooldown=10,verbose=True)
+            lss_fn = lambda x, y: torch.norm(x - y, dim=-1)
+
+            goal_pose = torch.cat((trans[th_idx], rot[th_idx]), dim=-1)
+
+            for i in range(max_num_iter):
+                optimizer.zero_grad()
+                curr_pos, curr_rot = self.compute_forward_kinematics(curr_conf, link_name=link_name)
+                curr_pose = torch.cat((curr_pos, curr_rot), dim=-1)
+
+                loss = lss_fn(curr_pose, goal_pose)
+                total_loss = torch.sum(loss)
+                total_loss.backward()
+                optimizer.step()
+                lr_scheduler.step(total_loss)
+
+                if verbose:
+                    print(f"total loss for thx {th_idx} in epoch {i}: {total_loss} m")
+
+                if total_loss < min_precision:
+                    break
+
+            final_conf[th_idx] = curr_conf
+
+        return final_conf
+
 
     @tensor_check
     def compute_non_linear_effects(
