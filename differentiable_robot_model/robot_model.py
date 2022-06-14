@@ -376,6 +376,54 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         return force
 
+    def __euler_from_quaternion(self, quat: torch.Tensor) -> torch.Tensor:
+        _EPS = torch.finfo(float).eps * 4.0
+        quat = quat[[3, 0, 1, 2]] # from [x, y, z, w] to [w, x, y, z]
+
+        q = quat
+        n = quat @ quat
+        if n < _EPS:
+            return torch.identity(4)
+        q = q * torch.sqrt(2.0 / n)
+        q = torch.outer(q, q)
+        quat_matrix = torch.tensor(
+            [
+                [
+                    1.0 - q[2, 2] - q[3, 3],
+                    q[1, 2] - q[3, 0],
+                    q[1, 3] + q[2, 0],
+                    0.0,
+                ],
+                [
+                    q[1, 2] + q[3, 0],
+                    1.0 - q[1, 1] - q[3, 3],
+                    q[2, 3] - q[1, 0],
+                    0.0,
+                ],
+                [
+                    q[1, 3] - q[2, 0],
+                    q[2, 3] + q[1, 0],
+                    1.0 - q[1, 1] - q[2, 2],
+                    0.0,
+                ],
+                [0.0, 0.0, 0.0, 1.0],
+            ]
+        )
+
+        M = quat_matrix[:3, :3]
+        cy = torch.sqrt(M[0, 0] * M[0, 0] + M[1, 0] * M[1, 0])
+        if cy > _EPS:
+            ax = torch.atan2(M[2, 1], M[2, 2])
+            ay = torch.atan2(-M[2, 0], cy)
+            az = torch.atan2(M[1, 0], M[0, 0])
+        else:
+            ax = torch.atan2(-M[1, 2], M[1, 1])
+            ay = torch.atan2(-M[2, 0], cy)
+            az = torch.zeros(1)
+
+        return torch.as_tensor([ax, ay, az])
+
+
     @tensor_check
     def compute_inverse_kinematics_jac(
         self,
@@ -392,7 +440,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         Args:
             trans: translation vector [batch_size x 3]
-            rot: rotation vector [batch_size x 4]
+            rot: rotation vector [batch_size x (x, y, z, w)]
             link_name: name of link
             init_conf: initinal configuration [batch_size x n_dofs] (optional)
             max_num_iter: maximal number of iterations
@@ -406,32 +454,32 @@ class DifferentiableRobotModel(torch.nn.Module):
         assert trans.shape[0] == rot.shape[0]
         assert trans.shape[1] == 3 and rot.shape[1] == 4        
 
-        import transformations as tf
-
         batch_size = trans.shape[0]
         final_conf = torch.empty((batch_size, self._n_dofs))
 
         for th_idx in range(batch_size):
             if th_idx == 0:
                 if init_conf == None:
-                    curr_conf = torch.rand((self._n_dofs)) # TODO: find better approximation?!
+                    curr_conf = torch.zeros((self._n_dofs)) # TODO: find better approximation?!
                 else:
                     curr_conf = init_conf
             else:
                 curr_conf = final_conf[th_idx-1]
 
-            goal_pose = torch.cat((trans[th_idx], torch.tensor(tf.euler_from_quaternion(rot[th_idx]))), dim=-1)
+            # must use euler because jacobian only works with euler 
+            goal_pose = torch.cat((trans[th_idx], self.__euler_from_quaternion(rot[th_idx])))
 
             for i in range(max_num_iter):
                 curr_pos, curr_rot = self.compute_forward_kinematics(curr_conf, link_name=link_name)
-                curr_rot = curr_rot[[3, 0, 1, 2]]
-                curr_pose = torch.cat((curr_pos, torch.tensor(tf.euler_from_quaternion(curr_rot))), dim=-1)
+                curr_pose = torch.cat((curr_pos, self.__euler_from_quaternion(curr_rot)))
 
-                curr_delta_pose = curr_pose - goal_pose
-                delta_norm = torch.norm(curr_delta_pose, dim=-1)
+                curr_delta_pose = goal_pose - curr_pose
+                # print(curr_delta_pose.tolist())
+                delta_norm = torch.mean(torch.abs(curr_delta_pose[:3]))
 
                 if verbose:
                     print(f"{th_idx} link loss in {i}: {delta_norm}")
+                    pass
 
                 if delta_norm < min_precision:
                     break
@@ -439,9 +487,13 @@ class DifferentiableRobotModel(torch.nn.Module):
                 lin_jac, ang_jac = self.compute_endeffector_jacobian(curr_conf, link_name=link_name)
                 jac = torch.concat((lin_jac, ang_jac), dim=0)
 
-                curr_delta_conf = jac.T @ curr_delta_pose.to(torch.float)
+                curr_delta_conf = jac.T @ curr_delta_pose
+                # curr_delta_conf[3:] = 0
 
-                curr_conf = curr_conf - learning_rate * curr_delta_conf
+                curr_conf = curr_conf + learning_rate * curr_delta_conf
+
+                # import time
+                # time.sleep(0.1)
 
             final_conf[th_idx] = curr_conf
 
