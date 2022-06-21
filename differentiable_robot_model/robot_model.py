@@ -198,7 +198,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
     @tensor_check
     def compute_forward_kinematics_all_links(
-        self, q: torch.Tensor
+        self, q: torch.Tensor, recursive: bool = False
     ) -> Tuple[torch.Tensor, torch.Tensor]:
         r"""
 
@@ -209,13 +209,22 @@ class DifferentiableRobotModel(torch.nn.Module):
         Returns: translation and rotation of the link frame
 
         """
-        # Create joint state dictionary
-        q_dict = {}
-        for i, body_idx in enumerate(self._controlled_joints):
-            q_dict[self._bodies[body_idx].name] = q[:, i].unsqueeze(1)
+        if recursive: 
+            # Create joint state dictionary
+            q_dict = {}
+            for i, body_idx in enumerate(self._controlled_joints):
+                q_dict[self._bodies[body_idx].name] = q[:, i].unsqueeze(1)
 
-        # Call forward kinematics on root node
-        pose_dict = self._bodies[0].forward_kinematics(q_dict)
+            # Call forward kinematics on root node
+            pose_dict = self._bodies[0].forward_kinematics(q_dict)
+
+        else:
+            qd = torch.zeros_like(q)
+            self.update_kinematic_state(q, qd)
+
+            pose_dict = {}
+            for link_name in self.get_link_names():
+                pose_dict[link_name] = self._bodies[self._name_to_idx_map[link_name]].pose
 
         return {
             link: (pose_dict[link].translation(), pose_dict[link].get_quaternion())
@@ -424,7 +433,6 @@ class DifferentiableRobotModel(torch.nn.Module):
         return torch.as_tensor([ax, ay, az])
 
 
-    @tensor_check
     def compute_inverse_kinematics_jac(
         self,
         trans: torch.Tensor,
@@ -442,7 +450,7 @@ class DifferentiableRobotModel(torch.nn.Module):
             trans: translation vector [batch_size x 3]
             rot: rotation vector [batch_size x (x, y, z, w)]
             link_name: name of link
-            init_conf: initinal configuration [batch_size x n_dofs] (optional)
+            init_conf: initinal configuration [n_dofs] (optional)
             max_num_iter: maximal number of iterations
             min_precision: which precision is good enough
             verbose: show debug log
@@ -460,7 +468,7 @@ class DifferentiableRobotModel(torch.nn.Module):
         for th_idx in range(batch_size):
             if th_idx == 0:
                 if init_conf == None:
-                    curr_conf = torch.zeros((self._n_dofs)) # TODO: find better approximation?!
+                    curr_conf = torch.rand((self._n_dofs)) # TODO: find better approximation?!
                 else:
                     curr_conf = init_conf
             else:
@@ -468,6 +476,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
             # must use euler because jacobian only works with euler 
             goal_pose = torch.cat((trans[th_idx], self.__euler_from_quaternion(rot[th_idx])))
+            min_error = torch.inf
 
             for i in range(max_num_iter):
                 curr_pos, curr_rot = self.compute_forward_kinematics(curr_conf, link_name=link_name)
@@ -475,11 +484,15 @@ class DifferentiableRobotModel(torch.nn.Module):
 
                 curr_delta_pose = goal_pose - curr_pose
                 # print(curr_delta_pose.tolist())
-                delta_norm = torch.mean(torch.abs(curr_delta_pose[:3]))
+                delta_norm = torch.mean(torch.abs(curr_delta_pose))
 
                 if verbose:
                     print(f"{th_idx} link loss in {i}: {delta_norm}")
                     pass
+
+                if delta_norm < min_error:
+                    min_error = delta_norm
+                    final_conf[th_idx] = curr_conf
 
                 if delta_norm < min_precision:
                     break
@@ -487,15 +500,14 @@ class DifferentiableRobotModel(torch.nn.Module):
                 lin_jac, ang_jac = self.compute_endeffector_jacobian(curr_conf, link_name=link_name)
                 jac = torch.concat((lin_jac, ang_jac), dim=0)
 
-                curr_delta_conf = jac.T @ curr_delta_pose
-                # curr_delta_conf[3:] = 0
+                pjac = torch.linalg.pinv(jac) # pseudo inverse
+
+                curr_delta_conf = pjac @ curr_delta_pose
 
                 curr_conf = curr_conf + learning_rate * curr_delta_conf
 
-                # import time
-                # time.sleep(0.1)
-
-            final_conf[th_idx] = curr_conf
+            if verbose:
+                print(f"{th_idx} final loss: {min_error}")
 
         return final_conf
 
