@@ -508,6 +508,9 @@ class DifferentiableRobotModel(torch.nn.Module):
             if verbose:
                 print(f"{th_idx} final loss: {min_error}")
 
+        if min_error > 0.01:
+            print(f"differentiable ik accuracy below {min_error}")
+
         return final_conf
 
     @tensor_check
