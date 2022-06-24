@@ -509,7 +509,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 print(f"{th_idx} final loss: {min_error}")
 
         if min_error > 0.01:
-            print(f"differentiable ik accuracy below {min_error}")
+            print(f"differentiable ik accuracy below threshold 0.01: {min_error}")
 
         return final_conf
 
