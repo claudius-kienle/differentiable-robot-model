@@ -483,7 +483,8 @@ class DifferentiableRobotModel(torch.nn.Module):
                 curr_pose = torch.cat((curr_pos, self.__euler_from_quaternion(curr_rot)))
 
                 curr_delta_pose = goal_pose - curr_pose
-                delta_norm = torch.sqrt(torch.sum(curr_delta_pose ** 2))
+                # TODO: also respect rotational error
+                delta_norm = torch.sqrt(torch.sum(curr_delta_pose[:3] ** 2))
 
                 if verbose:
                     print(f"{th_idx} link loss in {i}: {delta_norm}")
