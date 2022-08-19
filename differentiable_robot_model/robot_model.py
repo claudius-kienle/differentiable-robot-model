@@ -395,31 +395,21 @@ class DifferentiableRobotModel(torch.nn.Module):
             return torch.identity(4)
         q = q * torch.sqrt(2.0 / n)
         q = torch.outer(q, q)
-        quat_matrix = torch.tensor(
-            [
-                [
-                    1.0 - q[2, 2] - q[3, 3],
-                    q[1, 2] - q[3, 0],
-                    q[1, 3] + q[2, 0],
-                    0.0,
-                ],
-                [
-                    q[1, 2] + q[3, 0],
-                    1.0 - q[1, 1] - q[3, 3],
-                    q[2, 3] - q[1, 0],
-                    0.0,
-                ],
-                [
-                    q[1, 3] - q[2, 0],
-                    q[2, 3] + q[1, 0],
-                    1.0 - q[1, 1] - q[2, 2],
-                    0.0,
-                ],
-                [0.0, 0.0, 0.0, 1.0],
-            ]
-        )
 
-        M = quat_matrix[:3, :3]
+        # required to retrain grad
+        M = torch.eye(3, 3)
+        M[0, 0] = 1.0 - q[2, 2] - q[3, 3]
+        M[0, 1] = q[1, 2] - q[3, 0]
+        M[0, 2] = q[1, 3] + q[2, 0]
+
+        M[1, 0] = q[1, 2] + q[3, 0]
+        M[1, 1] = 1.0 - q[1, 1] - q[3, 3]
+        M[1, 2] = q[2, 3] - q[1, 0]
+
+        M[2, 0] = q[1, 3] - q[2, 0]
+        M[2, 1] = q[2, 3] + q[1, 0]
+        M[2, 2] = 1.0 - q[1, 1] - q[2, 2]
+
         cy = torch.sqrt(M[0, 0] * M[0, 0] + M[1, 0] * M[1, 0])
         if cy > _EPS:
             ax = torch.atan2(M[2, 1], M[2, 2])
@@ -478,39 +468,81 @@ class DifferentiableRobotModel(torch.nn.Module):
             goal_pose = torch.cat((trans[th_idx], self.__euler_from_quaternion(rot[th_idx])))
             min_error = torch.inf
 
-            for i in range(max_num_iter):
+            # logging
+            if verbose:
+                positions = []
+                errors = []
+                from tqdm import tqdm
+                bar = tqdm(max_num_iter)
+
+            i = 0
+            while True:
                 curr_pos, curr_rot = self.compute_forward_kinematics(curr_conf, link_name=link_name)
                 curr_pose = torch.cat((curr_pos, self.__euler_from_quaternion(curr_rot)))
 
+
                 curr_delta_pose = goal_pose - curr_pose
                 # TODO: also respect rotational error
-                delta_norm = torch.sqrt(torch.sum(curr_delta_pose[:3] ** 2))
+                delta_norm = torch.norm(curr_delta_pose)
 
                 if verbose:
-                    print(f"{th_idx} link loss in {i}: {delta_norm}")
-                    pass
+                    positions.append(curr_pos.detach().numpy())
+                    errors.append(curr_delta_pose)
+                    bar.set_description(f"{th_idx} link loss in {i}: {delta_norm}")
 
                 if delta_norm < min_error:
                     min_error = delta_norm
                     final_conf[th_idx] = curr_conf
 
                 if delta_norm < min_precision:
+                    if verbose:
+                        print("min precision reached")
+                    break
+
+                if i >= max_num_iter:
+                    if verbose:
+                        print("maximum number of iterations reached")
                     break
 
                 lin_jac, ang_jac = self.compute_endeffector_jacobian(curr_conf, link_name=link_name)
                 jac = torch.concat((lin_jac, ang_jac), dim=0)
 
-                pjac = torch.linalg.pinv(jac) # pseudo inverse
+                #### pseudo inverse
+                # pjac = torch.linalg.pinv(jac) # pseudo inverse
+                # curr_delta_conf = pjac @ curr_delta_pose
 
-                curr_delta_conf = pjac @ curr_delta_pose
+                #### damped least squares
+                lam = 0.5 # TODO: better damping constant?
+                f = torch.linalg.solve(jac @ jac.T + lam ** 2 * torch.eye(len(jac)), curr_delta_pose)
+                curr_delta_conf = jac.T @ f
 
                 curr_conf = curr_conf + learning_rate * curr_delta_conf
+
+                i += 1
 
             if verbose:
                 print(f"{th_idx} final loss: {min_error}")
 
+                from matplotlib import pyplot as plt
+                from matplotlib import colors
+                import numpy as np
+                plt.plot(torch.stack(errors).detach().numpy(), label=["x", "y", "z", "ax", "xy", "xz"])
+                plt.yscale('log')
+                plt.legend()
+                plt.show()
+
+                fig = plt.figure()
+                cmap = colors.LinearSegmentedColormap.from_list("", ["green","red"]) 
+                ax = fig.add_subplot(111, projection='3d')
+                # ax.plot(*np.array(positions).T, c='blue')
+                ax.scatter(*np.array(positions).T, c=[cmap(x/len(positions)) for x in range(len(positions))])
+                ax.scatter(*goal_pose[:3].detach(), c='red')
+                ax.scatter(*positions[0], c='green')
+                plt.show()
+
+
         if min_error > 0.01:
-            print(f"differentiable ik accuracy below threshold 0.01: {min_error}")
+            print(f"differentiable ik accuracy above threshold 0.01: {min_error}")
 
         return final_conf
 
