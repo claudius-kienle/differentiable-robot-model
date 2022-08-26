@@ -5,7 +5,6 @@ Differentiable robot model class
 TODO
 """
 
-from re import A
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import os
@@ -422,16 +421,17 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         return torch.as_tensor([ax, ay, az])
 
-
     def compute_inverse_kinematics_jac(
         self,
         trans: torch.Tensor,
         rot: torch.Tensor,
         link_name: str,
-        init_conf: Optional[torch.Tensor] = None,
+        init_conf: torch.Tensor,
         max_num_iter: int = 1000,
         min_precision: float = 0.1,
+        min_convergency_update: float = 1e-3,
         learning_rate: float = 0.1,
+        damping_factor: float = 0.04,
         verbose: bool = False
     ) -> torch.Tensor:
         r"""
@@ -451,15 +451,15 @@ class DifferentiableRobotModel(torch.nn.Module):
         assert trans.ndim == 2, rot.ndim == 2
         assert trans.shape[0] == rot.shape[0]
         assert trans.shape[1] == 3 and rot.shape[1] == 4        
+        assert init_conf is not None and len(init_conf) == self._n_dofs
 
         batch_size = trans.shape[0]
         final_conf = torch.empty((batch_size, self._n_dofs))
 
+        delta_confs = []
+
         for th_idx in range(batch_size):
             if th_idx == 0:
-                if init_conf == None:
-                    curr_conf = torch.rand((self._n_dofs)) # TODO: find better approximation?!
-                else:
                     curr_conf = init_conf
             else:
                 curr_conf = final_conf[th_idx-1]
@@ -482,7 +482,6 @@ class DifferentiableRobotModel(torch.nn.Module):
 
 
                 curr_delta_pose = goal_pose - curr_pose
-                # TODO: also respect rotational error
                 delta_norm = torch.norm(curr_delta_pose)
 
                 if verbose:
@@ -512,9 +511,14 @@ class DifferentiableRobotModel(torch.nn.Module):
                 # curr_delta_conf = pjac @ curr_delta_pose
 
                 #### damped least squares
-                lam = 0.5 # TODO: better damping constant?
-                f = torch.linalg.solve(jac @ jac.T + lam ** 2 * torch.eye(len(jac)), curr_delta_pose)
+                f = torch.linalg.solve(jac @ jac.T + damping_factor ** 2 * torch.eye(len(jac)), curr_delta_pose)
                 curr_delta_conf = jac.T @ f
+                delta_confs.append(curr_delta_conf)
+
+                if torch.norm(curr_delta_conf) < min_convergency_update:
+                    if verbose:
+                        print("convergency update too small")
+                    break
 
                 curr_conf = curr_conf + learning_rate * curr_delta_conf
 
@@ -526,23 +530,26 @@ class DifferentiableRobotModel(torch.nn.Module):
                 from matplotlib import pyplot as plt
                 from matplotlib import colors
                 import numpy as np
+                plt.figure()
+                plt.title("DLG IK: cartesian error over iteration steps")
                 plt.plot(torch.stack(errors).detach().numpy(), label=["x", "y", "z", "ax", "xy", "xz"])
                 plt.yscale('log')
                 plt.legend()
                 plt.show()
 
                 fig = plt.figure()
+                plt.title("Manipulator Pose in cartesian space over iteration steps")
                 cmap = colors.LinearSegmentedColormap.from_list("", ["green","red"]) 
                 ax = fig.add_subplot(111, projection='3d')
                 # ax.plot(*np.array(positions).T, c='blue')
                 ax.scatter(*np.array(positions).T, c=[cmap(x/len(positions)) for x in range(len(positions))])
-                ax.scatter(*goal_pose[:3].detach(), c='red')
+                ax.scatter(*goal_pose[:3].detach(), c='black')
                 ax.scatter(*positions[0], c='green')
                 plt.show()
 
 
-        if min_error > 0.01:
-            print(f"differentiable ik accuracy above threshold 0.01: {min_error}")
+        if min_error > min_precision:
+            print(f"differentiable ik accuracy above min precision {min_precision}: {min_error}")
 
         return final_conf
 
