@@ -396,7 +396,7 @@ class DifferentiableRobotModel(torch.nn.Module):
         q = torch.outer(q, q)
 
         # required to retrain grad
-        M = torch.eye(3, 3)
+        M = torch.eye(3, 3, device=quat.device)
         M[0, 0] = 1.0 - q[2, 2] - q[3, 3]
         M[0, 1] = q[1, 2] - q[3, 0]
         M[0, 2] = q[1, 3] + q[2, 0]
@@ -419,7 +419,7 @@ class DifferentiableRobotModel(torch.nn.Module):
             ay = torch.atan2(-M[2, 0], cy)
             az = torch.zeros(1)
 
-        return torch.as_tensor([ax, ay, az])
+        return torch.stack((ax, ay, az))
 
     def compute_inverse_kinematics_jac(
         self,
@@ -454,7 +454,7 @@ class DifferentiableRobotModel(torch.nn.Module):
         assert init_conf is not None and len(init_conf) == self._n_dofs
 
         batch_size = trans.shape[0]
-        final_conf = torch.empty((batch_size, self._n_dofs))
+        final_conf = torch.empty((batch_size, self._n_dofs), device=trans.device)
 
         delta_confs = []
 
@@ -511,7 +511,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 # curr_delta_conf = pjac @ curr_delta_pose
 
                 #### damped least squares
-                f = torch.linalg.solve(jac @ jac.T + damping_factor ** 2 * torch.eye(len(jac)), curr_delta_pose)
+                f = torch.linalg.solve(jac @ jac.T + damping_factor ** 2 * torch.eye(len(jac), device=jac.device), curr_delta_pose)
                 curr_delta_conf = jac.T @ f
                 delta_confs.append(curr_delta_conf)
 
