@@ -2,15 +2,14 @@
 """
 Differentiable robot model class
 ====================================
-TODO
 """
 
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import os
-from matplotlib.pyplot import cool
 
 import torch
+
 
 from .rigid_body import (
     DifferentiableRigidBody,
@@ -465,6 +464,11 @@ class DifferentiableRobotModel(torch.nn.Module):
                 curr_conf = final_conf[th_idx-1]
 
             # must use euler because jacobian only works with euler 
+            # tmp = self.__euler_from_quaternion(rot[th_idx])
+            # tmp2 = quaternion_to_euler_xyz(rot[None, th_idx]).squeeze()
+            # assert torch.allclose(tmp, tmp2)
+
+            # TODO: tested quaternion_to_euler_xyz, but different results. Check why?
             goal_pose = torch.cat((trans[th_idx], self.__euler_from_quaternion(rot[th_idx])))
             min_error = torch.inf
 
@@ -485,7 +489,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 delta_norm = torch.norm(curr_delta_pose)
 
                 if verbose:
-                    positions.append(curr_pos.detach().numpy())
+                    positions.append(curr_pos.cpu().detach().numpy())
                     errors.append(curr_delta_pose)
                     bar.set_description(f"{th_idx} link loss in {i}: {delta_norm}")
 
@@ -532,7 +536,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 import numpy as np
                 plt.figure()
                 plt.title("DLG IK: cartesian error over iteration steps")
-                plt.plot(torch.stack(errors).detach().numpy(), label=["x", "y", "z", "ax", "xy", "xz"])
+                plt.plot(torch.stack(errors).cpu().detach().numpy(), label=["x", "y", "z", "ax", "xy", "xz"])
                 plt.yscale('log')
                 plt.legend()
                 plt.show()
@@ -543,7 +547,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 ax = fig.add_subplot(111, projection='3d')
                 # ax.plot(*np.array(positions).T, c='blue')
                 ax.scatter(*np.array(positions).T, c=[cmap(x/len(positions)) for x in range(len(positions))])
-                ax.scatter(*goal_pose[:3].detach(), c='black')
+                ax.scatter(*goal_pose[:3].cpu().detach(), c='black')
                 ax.scatter(*positions[0], c='green')
                 plt.show()
 
