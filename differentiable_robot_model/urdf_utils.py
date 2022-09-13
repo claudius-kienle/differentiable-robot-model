@@ -4,10 +4,11 @@ URDF Utils
 ====================================
 TODO
 """
-import os
+import logging
 import torch
 from urdf_parser_py.urdf import URDF
 
+logger = logging.getLogger(__name__)
 
 class URDFRobotModel(object):
     def __init__(self, urdf_path, device="cpu"):
@@ -116,7 +117,7 @@ class URDFRobotModel(object):
             body_params["inertia_mat"] = torch.eye(3, 3, device=self._device).unsqueeze(
                 0
             )
-            print(
+            logger.debug(
                 "Warning: No dynamics information for link: {}, setting all inertial properties to 1.".format(
                     link.name
                 )

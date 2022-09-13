@@ -4,6 +4,7 @@ Differentiable robot model class
 ====================================
 """
 
+import logging
 from typing import List, Tuple, Dict, Optional
 from dataclasses import dataclass
 import os
@@ -21,6 +22,7 @@ import diff_robot_data
 
 robot_description_folder = diff_robot_data.__path__[0]
 
+logger = logging.getLogger(__name__)
 
 def tensor_check(function):
     """
@@ -499,12 +501,12 @@ class DifferentiableRobotModel(torch.nn.Module):
 
                 if delta_norm < min_precision:
                     if verbose:
-                        print("min precision reached")
+                        logger.debug("min precision reached")
                     break
 
                 if i >= max_num_iter:
                     if verbose:
-                        print("maximum number of iterations reached")
+                        logger.debug("maximum number of iterations reached")
                     break
 
                 lin_jac, ang_jac = self.compute_endeffector_jacobian(curr_conf, link_name=link_name)
@@ -521,7 +523,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
                 if torch.norm(curr_delta_conf) < min_convergency_update:
                     if verbose:
-                        print("convergency update too small")
+                        logger.debug("convergency update too small")
                     break
 
                 curr_conf = curr_conf + learning_rate * curr_delta_conf
@@ -529,7 +531,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 i += 1
 
             if verbose:
-                print(f"{th_idx} final loss: {min_error}")
+                logger.debug(f"{th_idx} final loss: {min_error}")
 
                 from matplotlib import pyplot as plt
                 from matplotlib import colors
@@ -553,7 +555,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
 
         if min_error > min_precision:
-            print(f"differentiable ik accuracy above min precision {min_precision}: {min_error}")
+            logger.debug(f"differentiable ik accuracy above min precision {min_precision}: {min_error}")
 
         return final_conf
 
@@ -619,7 +621,7 @@ class DifferentiableRobotModel(torch.nn.Module):
                 lr_scheduler.step(total_loss)
 
                 if verbose:
-                    print(f"total loss for thx {th_idx} in epoch {i}: {total_loss} m")
+                    logger.debug(f"total loss for thx {th_idx} in epoch {i}: {total_loss} m")
 
                 if total_loss < min_precision:
                     break
@@ -997,7 +999,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         """
         for i in range(len(self._bodies)):
-            print(self._bodies[i].name)
+            logger.debug(self._bodies[i].name)
 
     def print_learnable_params(self) -> None:
         r"""
@@ -1006,7 +1008,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         """
         for name, param in self.named_parameters():
-            print(f"{name}: {param}")
+            logger.debug(f"{name}: {param}")
 
 
 class DifferentiableKUKAiiwa(DifferentiableRobotModel):
