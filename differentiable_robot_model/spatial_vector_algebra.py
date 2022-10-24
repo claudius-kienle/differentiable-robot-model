@@ -7,6 +7,8 @@ from __future__ import annotations
 from typing import Optional
 import torch
 import math
+
+from pytorch_utils.utils import timing
 from . import utils
 from .utils import cross_product
 
@@ -105,6 +107,7 @@ class CoordinateTransform(object):
     def trans_cross_rot(self):
         return utils.vector3_to_skew_symm_matrix(self._trans) @ self._rot
 
+    @timing()
     def get_quaternion(self):
         batch_size = self._rot.shape[0]
         M = torch.zeros((batch_size, 4, 4)).to(self._rot.device)
@@ -113,6 +116,7 @@ class CoordinateTransform(object):
         M[:, 3, 3] = 1
         q = torch.empty((batch_size, 4)).to(self._rot.device)
         t = torch.einsum("bii->b", M)  # torch.trace(M)
+        # TODO: batch wise computation for performance improvements
         for n in range(batch_size):
             tn = t[n]
             if tn > M[n, 3, 3]:
@@ -133,6 +137,7 @@ class CoordinateTransform(object):
                 q[n, 3] = M[n, k, j] - M[n, j, k]
                 # q = q[[3, 0, 1, 2]]
             q[n, :] *= 0.5 / math.sqrt(tn * M[n, 3, 3])
+
         return q
 
     def to_matrix(self):

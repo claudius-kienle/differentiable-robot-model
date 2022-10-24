@@ -11,7 +11,6 @@ import os
 
 import torch
 
-
 from .rigid_body import (
     DifferentiableRigidBody,
 )
@@ -157,7 +156,13 @@ class DifferentiableRobotModel(torch.nn.Module):
 
         batch_size = q.shape[0]
 
-        # update the state of the joints
+        # update the state of the joints that are invariant to joint configuration changes to also respect the batch size
+        for i in range(self._controlled_joints[0]):
+            self._bodies[i].update_joint_state(
+                torch.zeros((batch_size, 1), device=self._device),
+                torch.zeros((batch_size, 1), device=self._device)
+            )
+
         for i in range(q.shape[1]):
             idx = self._controlled_joints[i]
             self._bodies[idx].update_joint_state(
@@ -181,6 +186,7 @@ class DifferentiableRobotModel(torch.nn.Module):
 
             # transformation operator from child link to parent link
             childToParentT = body.joint_pose
+
             # transformation operator from parent link to child link
             parentToChildT = childToParentT.inverse()
 
@@ -226,10 +232,11 @@ class DifferentiableRobotModel(torch.nn.Module):
             for link_name in self.get_link_names():
                 pose_dict[link_name] = self._bodies[self._name_to_idx_map[link_name]].pose
 
-        return {
+        result = {
             link: (pose_dict[link].translation(), pose_dict[link].get_quaternion())
             for link in pose_dict.keys()
         }
+        return result
 
     @tensor_check
     def compute_forward_kinematics(
@@ -917,6 +924,55 @@ class DifferentiableRobotModel(torch.nn.Module):
                 z_i = pose.rotation() @ axis.squeeze()
                 lin_jac[:, :, i] = torch.cross(z_i, p_e - p_i, dim=-1)
                 ang_jac[:, :, i] = z_i
+
+            link_name = self._urdf_model.get_name_of_parent_body(link_name)
+            joint_id = self._bodies[self._name_to_idx_map[link_name]].joint_id
+
+        return lin_jac, ang_jac
+
+    @tensor_check
+    def compute_endeffector_jacobian_all_links(
+        self, q: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        r"""
+
+        Args:
+            q: joint angles [batch_size x n_dofs]
+
+        Returns: linear and angular jacobian of all links
+
+        """
+        assert len(q.shape) == 2
+        link_names = self.get_link_names()
+        link_name = link_names[-1]
+        num_links = len(link_names)
+
+        batch_size = q.shape[0]
+        self.compute_forward_kinematics(q, link_name)
+
+        p_es = [
+            self._bodies[self._name_to_idx_map[l]].pose.translation()
+            for l in link_names[1:]
+        ]
+        p_es = torch.stack(p_es, dim=1)
+
+        lin_jac, ang_jac = (
+            torch.zeros([batch_size, num_links, 3, self._n_dofs], device=self._device),
+            torch.zeros([batch_size, num_links, 3, self._n_dofs], device=self._device),
+        )
+
+        joint_id = self._bodies[self._name_to_idx_map[link_name]].joint_id
+        while link_name != self._bodies[0].name:
+            if joint_id in self._controlled_joints:
+                i = self._controlled_joints.index(joint_id)
+                idx = joint_id
+
+                pose = self._bodies[idx].pose
+                axis = self._bodies[idx].joint_axis
+                p_i = pose.translation()
+                z_i = pose.rotation() @ axis.squeeze()
+                lin_jac[:, idx+1:, :, i] = torch.cross(z_i[:, None], p_es[:, idx:] - p_i[:, None], dim=-1)
+                ang_jac[:, idx:, :, i] = z_i[:, None]
 
             link_name = self._urdf_model.get_name_of_parent_body(link_name)
             joint_id = self._bodies[self._name_to_idx_map[link_name]].joint_id
