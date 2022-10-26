@@ -6,11 +6,11 @@ TODO
 from __future__ import annotations
 from typing import Optional
 import torch
-import math
+import torch.nn.functional as F
 
 from pytorch_utils.utils import timing
 from . import utils
-from .utils import cross_product
+from .utils import cross_product, sqrt_positive_part
 
 
 def x_rot(angle):
@@ -107,38 +107,55 @@ class CoordinateTransform(object):
     def trans_cross_rot(self):
         return utils.vector3_to_skew_symm_matrix(self._trans) @ self._rot
 
-    @timing()
     def get_quaternion(self):
-        batch_size = self._rot.shape[0]
-        M = torch.zeros((batch_size, 4, 4)).to(self._rot.device)
-        M[:, :3, :3] = self._rot
-        M[:, :3, 3] = self._trans
-        M[:, 3, 3] = 1
-        q = torch.empty((batch_size, 4)).to(self._rot.device)
-        t = torch.einsum("bii->b", M)  # torch.trace(M)
-        # TODO: batch wise computation for performance improvements
-        for n in range(batch_size):
-            tn = t[n]
-            if tn > M[n, 3, 3]:
-                q[n, 3] = tn
-                q[n, 2] = M[n, 1, 0] - M[n, 0, 1]
-                q[n, 1] = M[n, 0, 2] - M[n, 2, 0]
-                q[n, 0] = M[n, 2, 1] - M[n, 1, 2]
-            else:
-                i, j, k = 0, 1, 2
-                if M[n, 1, 1] > M[n, 0, 0]:
-                    i, j, k = 1, 2, 0
-                if M[n, 2, 2] > M[n, i, i]:
-                    i, j, k = 2, 0, 1
-                tn = M[n, i, i] - (M[n, j, j] + M[n, k, k]) + M[n, 3, 3]
-                q[n, i] = tn
-                q[n, j] = M[n, i, j] + M[n, j, i]
-                q[n, k] = M[n, k, i] + M[n, i, k]
-                q[n, 3] = M[n, k, j] - M[n, j, k]
-                # q = q[[3, 0, 1, 2]]
-            q[n, :] *= 0.5 / math.sqrt(tn * M[n, 3, 3])
+        # Implementation of: https://pytorch3d.readthedocs.io/en/latest/_modules/pytorch3d/transforms/rotation_conversions.html#matrix_to_quaternion
+        self._rot = self._rot
+        if self._rot.size(-1) != 3 or self._rot.size(-2) != 3:
+            raise ValueError(f"Invalid rotation matrix shape {self._rot.shape}.")
 
-        return q
+        batch_dim = self._rot.shape[:-2]
+        m00, m01, m02, m10, m11, m12, m20, m21, m22 = torch.unbind(
+            self._rot.reshape(batch_dim + (9,)), dim=-1
+        )
+
+        q_abs = sqrt_positive_part(
+            torch.stack(
+                [
+                    1.0 + m00 + m11 + m22,
+                    1.0 + m00 - m11 - m22,
+                    1.0 - m00 + m11 - m22,
+                    1.0 - m00 - m11 + m22,
+                ],
+                dim=-1,
+            )
+        )
+
+        # we produce the desired quaternion multiplied by each of r, i, j, k
+        quat_by_rijk = torch.stack(
+            [
+                torch.stack([q_abs[..., 0] ** 2, m21 - m12, m02 - m20, m10 - m01], dim=-1),
+                torch.stack([m21 - m12, q_abs[..., 1] ** 2, m10 + m01, m02 + m20], dim=-1),
+                torch.stack([m02 - m20, m10 + m01, q_abs[..., 2] ** 2, m12 + m21], dim=-1),
+                torch.stack([m10 - m01, m20 + m02, m21 + m12, q_abs[..., 3] ** 2], dim=-1),
+            ],
+            dim=-2,
+        )
+
+        # We floor here at 0.1 but the exact level is not important; if q_abs is small,
+        # the candidate won't be picked.
+        flr = torch.tensor(0.1).to(dtype=q_abs.dtype, device=q_abs.device)
+        quat_candidates = quat_by_rijk / (2.0 * q_abs[..., None].max(flr))
+
+        # if not for numerical problems, quat_candidates[i] should be same (up to a sign),
+        # forall i; we pick the best-conditioned one (with the largest denominator)
+
+        q2 = quat_candidates[
+            F.one_hot(q_abs.argmax(dim=-1), num_classes=4) > 0.5, :  # pyre-ignore[16]
+        ].reshape(batch_dim + (4,))
+
+        q2 = q2[:, [1, 2, 3, 0]]
+
+        return q2
 
     def to_matrix(self):
         batch_size = self._rot.shape[0]

@@ -84,3 +84,13 @@ def convert_into_at_least_2d_pytorch_tensor(variable):
         return tensor_var.unsqueeze(0)
     else:
         return tensor_var
+
+def sqrt_positive_part(x: torch.Tensor) -> torch.Tensor:
+    """
+    Returns torch.sqrt(torch.max(0, x))
+    but with a zero subgradient where x is 0.
+    """
+    ret = torch.zeros_like(x)
+    positive_mask = x > 0
+    ret[positive_mask] = torch.sqrt(x[positive_mask])
+    return ret
