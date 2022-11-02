@@ -17,10 +17,6 @@ from .rigid_body import (
 from .spatial_vector_algebra import SpatialMotionVec, SpatialForceVec
 from .urdf_utils import URDFRobotModel
 
-import diff_robot_data
-
-robot_description_folder = diff_robot_data.__path__[0]
-
 logger = logging.getLogger(__name__)
 
 def tensor_check(function):
@@ -1065,39 +1061,3 @@ class DifferentiableRobotModel(torch.nn.Module):
         """
         for name, param in self.named_parameters():
             logger.debug(f"{name}: {param}")
-
-
-class DifferentiableKUKAiiwa(DifferentiableRobotModel):
-    def __init__(self, device=None):
-        rel_urdf_path = "kuka_iiwa/urdf/iiwa7.urdf"
-        self.urdf_path = os.path.join(robot_description_folder, rel_urdf_path)
-        self.learnable_rigid_body_config = None
-        self.name = "differentiable_kuka_iiwa"
-        super().__init__(self.urdf_path, self.name, device=device)
-
-
-class DifferentiableFrankaPanda(DifferentiableRobotModel):
-    def __init__(self, device=None):
-        rel_urdf_path = "panda_description/urdf/panda_no_gripper.urdf"
-        self.urdf_path = os.path.join(robot_description_folder, rel_urdf_path)
-        self.learnable_rigid_body_config = None
-        self.name = "differentiable_franka_panda"
-        super().__init__(self.urdf_path, self.name, device=device)
-
-
-class DifferentiableTwoLinkRobot(DifferentiableRobotModel):
-    def __init__(self, device=None):
-        rel_urdf_path = "2link_robot.urdf"
-        self.urdf_path = os.path.join(robot_description_folder, rel_urdf_path)
-        self.learnable_rigid_body_config = None
-        self.name = "diff_2d_robot"
-        super().__init__(self.urdf_path, self.name, device=device)
-
-
-class DifferentiableTrifingerEdu(DifferentiableRobotModel):
-    def __init__(self, device=None):
-        rel_urdf_path = "trifinger_edu_description/trifinger_edu.urdf"
-        self.urdf_path = os.path.join(robot_description_folder, rel_urdf_path)
-        self.learnable_rigid_body_config = None
-        self.name = "trifinger_edu"
-        super().__init__(self.urdf_path, self.name, device=device)
