@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "differentiable-robot-model"
+version = "1.0"
+dependencies = [
+    'numpy',
+    'torch',
+    'pyquaternion',
+    'urdf_parser_py',
+    'tqdm',
+    'matplotlib',
+]
